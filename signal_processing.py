@@ -1,4 +1,5 @@
 import numpy as np
+import itertools
 
 class SignalSequence:
     """
@@ -596,93 +597,35 @@ def gen_convolve_finite(input_gen, h_finite_seq):
     :param h_finite_seq: (SignalSequence) 有限的 h[n] (FIR 滤波器)
     """
     
-    # 为了正确处理 h[n] 的 n0，我们需要反转 h[n]
-    # y[n] = sum(h_rev[k] * x[n+k]) (另一种形式)
-    # 我们还是用标准定义: y[n] = sum(h[k] * x[n-k])
-    
-    # h 的索引 k 从 h.n_start 到 h.n_end
-    h_indices = h_finite_seq.indices
-    h_len = len(h_indices)
-    
-    # 1. 创建一个与 h 长度相同的 buffer，用于存储 x[n] 的历史值
-    x_buffer = [0.0] * h_len
-    
-    # 2. 从输入流中读取
-    for x_n in input_gen:
-        # (我们假设 input_gen 从 n=0 开始)
-        
-        # 将新值放入 buffer
-        x_buffer.pop(0)
-        x_buffer.append(x_n)
-        
-        # 3. 计算 y[n] 的当前值
-        # y[n] = h[k_start]*x[n-k_start] + ... + h[k_end]*x[n-k_end]
-        y_n = 0.0
-        
-        # 遍历 h[k] 的 k
-        for i, k in enumerate(h_indices):
-            # h[k] 的值
-            h_k = h_finite_seq[k]
-            
-            # 对应的 x[n-k] 在 buffer 中的位置
-            # k=h_indices[i]
-            # 我们需要 x[n - h_indices[i]]
-            # x_buffer 存储的是 [x[n-L+1], ..., x[n-1], x[n]]
-            # 这太复杂了。
-            
-            # 我们换一种更简单的实现，使用反转的 h
-            # h_rev_data = [h[k_end], ..., h[k_start]]
-            # y[n] = sum(x[n-i] * h_rev[i]) (假设 h 从 0 开始)
-            pass # 放弃这个复杂实现
-
-    # --- 让我们用一个更简单、更直观的实现 ---
-    # 我们直接使用反转的 h，这样 y[n] = (x * h)[n]
-    # 就变成了 x[n] 和 h_rev[k] 的 "点积"
-    
-    # 1. 获取 h 的数据，并反转它
-    # h = [1, 2, 3] (n0=0)
-    # h_rev_data = [3, 2, 1]
-    h_rev_data = np.flip(h_finite_seq.data)
-    h_len = len(h_rev_data)
-    
-    # 2. 创建 buffer
-    x_buffer = [0.0] * h_len
-    
-    # 3. (重要) 处理 h[n] 的 n0
-    # h = [1, 2] (n0 = -1)
-    # h_rev = [2, 1] (n0 = 0)
-    # 我们的 y[n] = sum(x[k]h[n-k])
-    # 假设 x[n] 从 n=0 开始
-    # y[0] = x[0]h[0] + x[1]h[-1]
-    # y[1] = x[0]h[1] + x[1]h[0] + x[2]h[-1]
-    
-    # 这需要一个非常复杂的 buffer 管理
-    # 为了演示 "随来随处理"，我们做一个简化：
-    # 我们假设 h[n] 也从 n=0 开始
+    # 1. 检查 h 是否从 n=0 开始 (简化流式处理的假设)
     if h_finite_seq.n0 != 0:
         print(f"[警告] gen_convolve_finite: h[n] 的 n0={h_finite_seq.n0} "
               f"将被忽略。仅支持 h[n] 从 n=0 开始。")
     
     h_data = h_finite_seq.data
     h_len = len(h_data)
+    
+    # 2. 维护一个固定长度的缓冲区，模拟“滑动窗口”
+    # 仅存储过去的 h_len 个输入值，确保操作是因果的
     x_buffer = [0.0] * h_len
     
+    # 3. 开始流式处理
     for x_n in input_gen:
-        # 1. 新值入栈
+        # 更新状态：移除最旧的，加入最新的
         x_buffer.pop(0)
         x_buffer.append(x_n)
         
-        # 2. 计算 y[n] = sum(h[k] * x[n-k])
-        # h[0]*x[n] + h[1]*x[n-1] + ... + h[L-1]*x[n-L+1]
-        
+        # 乘累加运算 (MAC): 计算当前时刻的卷积值
+        # y[n] = h[0]*x[n] + h[1]*x[n-1] + ... + h[M-1]*x[n-M+1]
         y_n = 0.0
         
-        # 遍历 h[k]
         for k in range(h_len):
-            # h[k] * x[n-k]
-            # x[n-k] 对应 buffer 中的 x_buffer[L-1-k]
+            # h[k] 对应 x_buffer 中的倒数第 k+1 个元素
+            # x_buffer[h_len - 1 - k] 就是 x[n-k]
             y_n += h_data[k] * x_buffer[h_len - 1 - k]
-            
+        
+        # 【关键修复】：yield 必须在 for x_n 循环的 *内部*
+        # 每处理一个输入，就产出一个输出
         yield y_n
 
 def gen_mul(gen1, gen2):
